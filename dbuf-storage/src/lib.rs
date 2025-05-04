@@ -40,7 +40,6 @@ impl From<sled::Error> for DbError {
 
 pub struct  Collection {
     tree: sled::Tree,
-    name: String,
 }
 
 pub struct Database {
@@ -61,7 +60,6 @@ impl Database {
         
         Ok(Collection {
             tree: tree,
-            name: name.to_string(),
         })
     }
 
@@ -117,7 +115,7 @@ impl Collection {
         self.insert_json(json)
     }
 
-    fn insert_json(&self, json: String) -> Result<String, DbError> {   
+    pub fn insert_json(&self, json: String) -> Result<String, DbError> {   
         let value: Value = serde_json::from_str(&json)
             .map_err(|e| DbError::DeserializationError(format!("JSON parsing error: {}", e)))?;
 
@@ -175,7 +173,7 @@ impl Collection {
         serde_json::from_str(&json).map_err(|e| DbError::DeserializationError(e.to_string()))
     }
 
-    fn get_json(&self, id: &str) -> Result<String, DbError> {
+    pub fn get_json(&self, id: &str) -> Result<String, DbError> {
         let item_data = match self.tree.get(id.as_bytes())? {
             Some(data) => data,
             None => return Err(DbError::NotFound),
@@ -224,7 +222,7 @@ impl Collection {
         Ok(())
     }
 
-    fn update_json(&self, id: &str, json: String) -> Result<(), DbError> {
+    pub fn update_json(&self, id: &str, json: String) -> Result<(), DbError> {
         let old_item_data = match self.tree.get(id.as_bytes())? {
             Some(data) => data,
             None => return Err(DbError::NotFound),
@@ -362,7 +360,7 @@ impl Collection {
         self.subcollection_json(deps_json)
     }
     
-    fn subcollection_json(&self, dependencies_json: String) -> Result<Subcollection, DbError> {
+    pub fn subcollection_json(&self, dependencies_json: String) -> Result<Subcollection, DbError> {
         let dependencies: Value = serde_json::from_str(&dependencies_json)
             .map_err(|e| DbError::DeserializationError(format!("JSON parsing error: {}", e)))?;
         
@@ -389,7 +387,7 @@ impl<'a> Subcollection<'a> {
         self.insert_json(body_json)
     }
     
-    fn insert_json(&self, body_json: String) -> Result<String, DbError> {
+    pub fn insert_json(&self, body_json: String) -> Result<String, DbError> {
         let body: Value = serde_json::from_str(&body_json)
             .map_err(|e| DbError::DeserializationError(format!("JSON parsing error: {}", e)))?;
         
@@ -411,7 +409,7 @@ impl<'a> Subcollection<'a> {
             .map_err(|e| DbError::DeserializationError(format!("Failed to deserialize body: {}", e)))
     }
     
-    fn get_json(&self, id: &str) -> Result<String, DbError> {
+    pub fn get_json(&self, id: &str) -> Result<String, DbError> {
         self.check_belongs_to_subcollection(id)?;
         
         let item_data = match self.collection.tree.get(id.as_bytes())? {
@@ -440,7 +438,7 @@ impl<'a> Subcollection<'a> {
         self.update_json(id, body_json)
     }
     
-    fn update_json(&self, id: &str, body_json: String) -> Result<(), DbError> {
+    pub fn update_json(&self, id: &str, body_json: String) -> Result<(), DbError> {
         self.check_belongs_to_subcollection(id)?;
         
         let item_data = match self.collection.tree.get(id.as_bytes())? {
@@ -488,7 +486,7 @@ impl<'a> Subcollection<'a> {
         self.delete_json(id)
     }
     
-    fn delete_json(&self, id: &str) -> Result<(), DbError> {
+    pub fn delete_json(&self, id: &str) -> Result<(), DbError> {
         self.check_belongs_to_subcollection(id)?;
         
         self.collection.delete(id)

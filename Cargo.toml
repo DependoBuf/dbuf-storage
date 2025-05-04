@@ -1,5 +1,5 @@
 [workspace]
-members = ["dbuf-storage"]
+members = ["dbuf-storage", "storage-server"]
 resolver = "2"
 
 [workspace.package]
