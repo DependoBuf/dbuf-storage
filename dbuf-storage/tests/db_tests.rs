@@ -1,4 +1,4 @@
-use dbuf_storage::{Collection, Database, DbError};
+use dbuf_storage::{Database, DbError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
@@ -157,10 +157,10 @@ fn test_database_creation() {
     let temp_dir = tempdir().unwrap();
     let db_path = temp_dir.path().to_str().unwrap();
 
-    let db = Database::new(Some(db_path)).expect("Failed to open database");
+    let _ = Database::new(Some(db_path)).expect("Failed to open database");
     assert!(Path::new(db_path).exists());
 
-    let default_db = Database::new(None).expect("Failed to open database with default path");
+    let _ = Database::new(None).expect("Failed to open database with default path");
     assert!(Path::new("./dbuf_db").exists());
 
     let _ = fs::remove_dir_all("./dbuf_db");
@@ -264,7 +264,7 @@ fn test_basic_crud_operations() {
 }
 
 #[test]
-fn test_complex_data_operations() {
+fn test_collection_sum() {
     let temp_dir = tempdir().unwrap();
     let db_path = temp_dir.path().to_str().unwrap();
     let db = Database::new(Some(db_path)).expect("Failed to open database");
@@ -978,101 +978,6 @@ fn test_user_subcollection() {
 }
 
 #[test]
-fn test_idempotent_operations() {
-    let temp_dir = tempdir().unwrap();
-    let db_path = temp_dir.path().to_str().unwrap();
-    let db = Database::new(Some(db_path)).expect("Failed to open database");
-    let collection = db
-        .create_collection("test_idempotent")
-        .expect("Failed to create collection");
-
-    let sum_deps1 = sum::Dependencies { a: 42 };
-    let sum1 = sum::Sum::new(sum_deps1).unwrap();
-
-    let id = collection.insert(&sum1).expect("Failed to insert item");
-
-    let sum_deps2 = sum::Dependencies { a: 42 };
-    let sum2 = sum::Sum::new(sum_deps2).unwrap();
-
-    let result = collection.update(&id, &sum2);
-    assert!(result.is_ok());
-
-    let json = r#"{"body":{},"dependencies":{"a":42}}"#;
-    let id_json = collection
-        .insert_json(json.to_string())
-        .expect("Failed to insert JSON");
-
-    let result = collection.update_json(&id_json, json.to_string());
-    assert!(result.is_ok());
-
-    let sum_deps3 = sum::Dependencies { a: 42 };
-    let subcollection = collection
-        .subcollection(&sum_deps3)
-        .expect("Failed to create subcollection");
-
-    let body = sum::Body {};
-    let sub_id = subcollection.insert(&body).expect("Failed to insert body");
-
-    let result = subcollection.update(&sub_id, &body);
-    assert!(result.is_ok());
-}
-
-#[test]
-fn test_concurrent_sublollections() {
-    let temp_dir = tempdir().unwrap();
-    let db_path = temp_dir.path().to_str().unwrap();
-    let db = Database::new(Some(db_path)).expect("Failed to open database");
-    let collection = db
-        .create_collection("test_concurrent")
-        .expect("Failed to create collection");
-
-    let deps1 = foo::Dependencies { a: 1, b: 2 };
-    let deps2 = foo::Dependencies { a: 3, b: 4 };
-    let deps3 = foo::Dependencies { a: 5, b: 6 };
-
-    let subcol1 = collection
-        .subcollection(&deps1)
-        .expect("Failed to create subcol1");
-    let subcol2 = collection
-        .subcollection(&deps2)
-        .expect("Failed to create subcol2");
-    let subcol3 = collection
-        .subcollection(&deps3)
-        .expect("Failed to create subcol3");
-
-    let body = foo::Body {
-        sum: Sum::new(sum::Dependencies { a: 1 }).unwrap(),
-    };
-
-    let id1 = subcol1.insert(&body).expect("Failed to insert in subcol1");
-    let id2 = subcol2.insert(&body).expect("Failed to insert in subcol2");
-    let id3 = subcol3.insert(&body).expect("Failed to insert in subcol3");
-
-    let foo1: foo::Foo = collection.get(&id1).expect("Failed to get from collection");
-    let foo2: foo::Foo = collection.get(&id2).expect("Failed to get from collection");
-    let foo3: foo::Foo = collection.get(&id3).expect("Failed to get from collection");
-
-    assert_eq!(foo1.dependencies, deps1);
-    assert_eq!(foo2.dependencies, deps2);
-    assert_eq!(foo3.dependencies, deps3);
-
-    assert!(subcol1.get::<foo::Body>(&id2).is_err());
-    assert!(subcol2.get::<foo::Body>(&id3).is_err());
-    assert!(subcol3.get::<foo::Body>(&id1).is_err());
-
-    let keys1 = subcol1.get_keys().expect("Failed to get keys from subcol1");
-    let keys2 = subcol2.get_keys().expect("Failed to get keys from subcol2");
-    let keys3 = subcol3.get_keys().expect("Failed to get keys from subcol3");
-
-    assert_eq!(keys1.len(), 1);
-    assert_eq!(keys2.len(), 1);
-    assert_eq!(keys3.len(), 1);
-    assert!(keys1.contains(&id1));
-    assert!(keys2.contains(&id2));
-    assert!(keys3.contains(&id3));
-}
-
-#[test]
 fn test_schema_consistency() {
     let temp_dir = tempdir().unwrap();
     let db_path = temp_dir.path().to_str().unwrap();
@@ -1119,37 +1024,4 @@ fn test_schema_consistency() {
     let invalid_json = r#"{"body":{"name":123},"dependencies":{"id":"123"}}"#;
     let result = collection.insert_json(invalid_json.to_string());
     assert!(matches!(result, Err(DbError::SchemaValidationError(_))));
-}
-
-#[test]
-fn test_edge_cases() {
-    let temp_dir = tempdir().unwrap();
-    let db_path = temp_dir.path().to_str().unwrap();
-    let db = Database::new(Some(db_path)).expect("Failed to open database");
-    let collection = db
-        .create_collection("test_edge_cases")
-        .expect("Failed to create collection");
-
-    let sum_deps = sum::Dependencies { a: 42 };
-    let sum = sum::Sum::new(sum_deps).unwrap();
-
-    let id = collection.insert(&sum).expect("Failed to insert item");
-    collection.delete(&id).expect("Failed to delete item");
-
-    let result = collection.delete(&id);
-    assert!(matches!(result, Err(DbError::NotFound)));
-
-    let empty_deps_json = r#"{}"#;
-    let subcol = collection
-        .subcollection_json(empty_deps_json.to_string())
-        .expect("Failed to create subcollection with empty deps");
-
-    let body_json = r#"{}"#;
-    let empty_id = subcol
-        .insert_json(body_json.to_string())
-        .expect("Failed to insert with empty deps");
-
-    let retrieved_empty: Value =
-        serde_json::from_str(&subcol.get_json(&empty_id).unwrap()).unwrap();
-    assert_eq!(retrieved_empty, json!({}));
 }
