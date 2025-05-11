@@ -5,6 +5,7 @@ use schemars::{schema_for, JsonSchema};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use sled;
+use sled::transaction::TransactionError;
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
@@ -298,6 +299,25 @@ impl Collection {
         rand_string
     }
 
+    fn generate_unique_id(&self) -> Result<String, DbError> {
+        const MAX_ATTEMPTS: usize = 10;
+
+        for attempt in 0..MAX_ATTEMPTS {
+            let id = self.generate_id();
+
+            if !self.tree.contains_key(id.as_bytes())? {
+                return Ok(id);
+            }
+
+            println!("ID collision detected (attempt {}): {}", attempt + 1, id);
+        }
+
+        Err(DbError::DatabaseError(format!(
+            "Failed to generate unique ID after {} attempts",
+            MAX_ATTEMPTS
+        )))
+    }
+
     fn compile_schemas(&mut self) -> Result<(), DbError> {
         if let Some(ref mut body_schema) = self.metadata.body_schema {
             if body_schema.compiled.is_none() {
@@ -401,14 +421,7 @@ impl Collection {
 
         let deps_hash = get_json_hash(&dependencies_json);
 
-        let id = self.generate_id();
-
-        if self.tree.contains_key(id.as_bytes())? {
-            return Err(DbError::AlreadyExists(format!(
-                "Item with ID {} already exists",
-                id
-            )));
-        }
+        let id = self.generate_unique_id()?;
 
         let storage_value = json!({
             "deps": deps_hash,
@@ -419,17 +432,25 @@ impl Collection {
             DbError::SerializationError(format!("Failed to serialize storage value: {}", e))
         })?;
 
-        self.tree.insert(id.as_bytes(), storage_json.as_bytes())?;
+        let deps_exists = self.tree.contains_key(deps_hash.as_bytes())?;
 
-        if !self.tree.contains_key(deps_hash.as_bytes())? {
-            self.tree
-                .insert(deps_hash.as_bytes(), dependencies_json.as_bytes())?;
-        }
+        let result = self.tree.transaction(|tx_tree| {
+            tx_tree.insert(id.as_bytes(), storage_json.as_bytes())?;
 
-        let marker_key = format!("{}_{}", deps_hash, id);
-        self.tree.insert(marker_key.as_bytes(), &[])?;
+            if !deps_exists {
+                tx_tree.insert(deps_hash.as_bytes(), dependencies_json.as_bytes())?;
+            }
+
+            let marker_key = format!("{}_{}", deps_hash, id);
+            tx_tree.insert(marker_key.as_bytes(), &[])?;
+
+            Ok(())
+        });
+
+        result.map_err(|e: TransactionError| DbError::DatabaseError(e.to_string()))?;
 
         self.tree.flush()?;
+
         Ok(id)
     }
 
@@ -567,17 +588,6 @@ impl Collection {
         }
 
         if deps_changed {
-            let old_marker_key = format!("{}_{}", old_deps_hash, id);
-            self.tree.remove(old_marker_key.as_bytes())?;
-
-            if !self.tree.contains_key(new_deps_hash.as_bytes())? {
-                self.tree
-                    .insert(new_deps_hash.as_bytes(), new_dependencies_json.as_bytes())?;
-            }
-
-            let new_marker_key = format!("{}_{}", new_deps_hash, id);
-            self.tree.insert(new_marker_key.as_bytes(), &[])?;
-
             new_storage_value["deps"] = json!(new_deps_hash);
         }
 
@@ -585,8 +595,27 @@ impl Collection {
             DbError::SerializationError(format!("Failed to serialize updated item: {}", e))
         })?;
 
-        self.tree
-            .insert(id.as_bytes(), updated_storage_json.as_bytes())?;
+        let new_deps_exists = self.tree.contains_key(new_deps_hash.as_bytes())?;
+
+        let result = self.tree.transaction(|tx_tree| {
+            if deps_changed {
+                let old_marker_key = format!("{}_{}", old_deps_hash, id);
+                tx_tree.remove(old_marker_key.as_bytes())?;
+
+                if !new_deps_exists {
+                    tx_tree.insert(new_deps_hash.as_bytes(), new_dependencies_json.as_bytes())?;
+                }
+
+                let new_marker_key = format!("{}_{}", new_deps_hash, id);
+                tx_tree.insert(new_marker_key.as_bytes(), &[])?;
+            }
+
+            tx_tree.insert(id.as_bytes(), updated_storage_json.as_bytes())?;
+
+            Ok(())
+        });
+
+        result.map_err(|e: TransactionError| DbError::DatabaseError(e.to_string()))?;
 
         self.tree.flush()?;
         Ok(())
@@ -616,24 +645,31 @@ impl Collection {
             .as_str()
             .ok_or_else(|| DbError::DeserializationError("Invalid deps_hash format".to_string()))?;
 
-        self.tree.remove(id.as_bytes())?;
-
-        let marker_key = format!("{}_{}", deps_hash, id);
-        self.tree.remove(marker_key.as_bytes())?;
-
-        let mut has_other_items = false;
         let prefix = format!("{}_", deps_hash);
-
+        let mut items_cnt = 0;
         for result in self.tree.scan_prefix(prefix.as_bytes()) {
             if result.is_ok() {
-                has_other_items = true;
-                break;
+                items_cnt += 1;
+                if items_cnt >= 2 {
+                    break;
+                }
             }
         }
 
-        if !has_other_items {
-            self.tree.remove(deps_hash.as_bytes())?;
-        }
+        let result = self.tree.transaction(|tx_tree| {
+            tx_tree.remove(id.as_bytes())?;
+
+            let marker_key = format!("{}_{}", deps_hash, id);
+            tx_tree.remove(marker_key.as_bytes())?;
+
+            if items_cnt >= 2 {
+                tx_tree.remove(deps_hash.as_bytes())?;
+            }
+
+            Ok(())
+        });
+
+        result.map_err(|e: TransactionError| DbError::DatabaseError(e.to_string()))?;
 
         self.tree.flush()?;
         Ok(())

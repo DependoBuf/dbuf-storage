@@ -1,5 +1,5 @@
 use actix_web::http::StatusCode;
-use actix_web::{middleware, web, App, Error, HttpResponse, HttpServer, Responder, ResponseError};
+use actix_web::{middleware, web, App, HttpResponse, HttpServer, Responder, ResponseError};
 use clap::{Arg, Command};
 use dbuf_storage::{Database, DbError};
 use serde::{Deserialize, Serialize};
